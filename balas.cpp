@@ -8,31 +8,24 @@
 #include <random>
 #include <vector>
 
-const int n_vars = 50;
 
-std::array<std::array<double, 3>, n_vars> A;
-
-
-// may need to unroll remaining_scores and scores
-// but maybe not because of spatial locality
-void nx(const std::vector<std::vector<double>>& A, const int n_vars, const double threshold,
-        int x, int ck, int objective, std::vector<int>& path,
+void solve(const std::vector<std::pair<int, std::vector<double>>>& A,
+        const int n_vars, const double threshold,
+        int x, int changed, int objective, std::vector<int>& path,
         std::array<double, 3>& scores, std::array<double, 3>& remaining_scores, 
         int& min_objective, double& solution_sum, std::vector<int>& solution,
         std::vector<int>& candidates, 
         const std::vector<std::vector<int>>& worse_keyframes) {
             
-    if (ck == 1) {
+    if (changed == 1) {
         // Balas's second test
         if (objective > min_objective) {
             return;
         }
 
         else if (objective == min_objective) {
-            if (    scores[0] > threshold &&
-                    scores[1] > threshold &&
-                    scores[2] > threshold &&
-                    scores[0] + scores[1] + scores[2] > solution_sum ) {
+            if (scores[0] > threshold && scores[1] > threshold && scores[2] > threshold &&
+                    scores[0]+scores[1]+scores[2] > solution_sum) {
                 solution_sum = scores[0] + scores[1] + scores[2];
                 min_objective = objective;
                 solution = path;
@@ -56,7 +49,7 @@ void nx(const std::vector<std::vector<double>>& A, const int n_vars, const doubl
                 int possible = 0;
                 const double goal_ratio = amount_off / (min_objective - objective);
                 for (int j = x; j < n_vars; ++j) {
-                    if (A[j][i] >= goal_ratio) {
+                    if (A[j].second[i] >= goal_ratio) {
                         possible = 1;
                         break;
                     }
@@ -88,18 +81,18 @@ void nx(const std::vector<std::vector<double>>& A, const int n_vars, const doubl
     if (candidates[x] == 1) {
         path[x] = 1;
         for (int i = 0; i < 3; ++i) {
-            scores[i] += A[x][i];
-            remaining_scores[i] -= A[x][i];
+            scores[i] += A[x].second[i];
+            remaining_scores[i] -= A[x].second[i];
         }
 
-        nx(A, n_vars, threshold, x + 1, 1, objective+1, path, scores, remaining_scores,
+        solve(A, n_vars, threshold, x + 1, 1, objective+1, path, scores, remaining_scores,
            min_objective, solution_sum, solution, candidates, worse_keyframes);
 
         // undo changes
         path[x] = 0;
         for (int i = 0; i < 3; ++i) {
-            scores[i] -= A[x][i];
-            remaining_scores[i] += A[x][i];
+            scores[i] -= A[x].second[i];
+            remaining_scores[i] += A[x].second[i];
         }
     }
 
@@ -116,49 +109,39 @@ void nx(const std::vector<std::vector<double>>& A, const int n_vars, const doubl
     }
 
     // Don't need to check anything if path are unchanged
-    nx(A, n_vars, threshold, x + 1, 0, objective, path, scores, remaining_scores,
+    solve(A, n_vars, threshold, x + 1, 0, objective, path, scores, remaining_scores,
        min_objective, solution_sum, solution, new_candidates, worse_keyframes);
 }
 
 
-void start(std::vector<std::vector<double>>& A,
+void start(const std::vector<std::vector<double>>& A,
            const double threshold, const double min_score_sum,
            std::vector<int>& selected_indices) {
+
+    // package A into pairs of index, keyframe scores
+    // to keep track of indices after filtering and sorting
+    std::vector<std::pair<int, std::vector<double>>> A_indexed;
+    for (int i = 0; i < A.size(); ++i)
+        A_indexed.push_back({i, A[i]});
     
-    // filter out rows with sum less than min_score_sum
-    // also track where the included indices map to
-    std::vector<std::vector<double>> filtered;
-    std::vector<int> map_filtered_index;
+    // Iterate over A_indexed and remove elements that do not meet the sum condition
+    A_indexed.erase(std::remove_if(A_indexed.begin(), A_indexed.end(),
+        [min_score_sum](const std::pair<int, std::vector<double>>& keyframe) {
+            double rowSum = 0;
+            for (double value : keyframe.second)
+                rowSum += value;
 
-    for (int i = 0; i < A.size(); ++i) {
-        double rowSum = 0;
-        for (double element : A[i]) {
-            rowSum += element;
+            return rowSum < min_score_sum;
         }
+    ), A_indexed.end());
 
-        if (rowSum >= min_score_sum) {
-            filtered.push_back(A[i]);
-            map_filtered_index.push_back(i);
-        }
-    }
-
-    const int n_vars = filtered.size();
-
-    // for (int i = 0; i < A.size(); i++) {
-    //     for (int j = 0; j < 3; j++) {
-    //         std::cout << A[i][j] << " ";
-    //     }
-    //     std::cout << "\n";
-    // }
-    // std::cout << "------------------\n";
+    const int n_vars = A_indexed.size();
 
     // fill remaining_scores
     std::array<double, 3> remaining_scores {};
-    for (int i = 0; i < n_vars; ++i) {
-        for (int j = 0; j < 3; ++j) {
-            remaining_scores[j] += A[i][j];
-        }
-    }
+    for (int i = 0; i < n_vars; ++i)
+        for (int j = 0; j < 3; ++j)
+            remaining_scores[j] += A_indexed[i].second[j];
 
     // get the order to sort by
     std::array<int, 3> sortOrder = {0, 1, 2};
@@ -167,23 +150,25 @@ void start(std::vector<std::vector<double>>& A,
     });
 
     // sort A based on which constraints are lowest
-    std::sort(filtered.begin(), filtered.end(),
-        [&](const std::vector<double>& a, const std::vector<double>& b) {
+    std::sort(A_indexed.begin(), A_indexed.end(),
+        [&](const std::pair<int, std::vector<double>>& a,
+            const std::pair<int, std::vector<double>>& b) {
             for (int i = 0; i < 3; ++i) {
                 int col = sortOrder[i];
-                if (a[col] != b[col]) {
-                    return a[col] > b[col];
+                if (a.second[col] != b.second[col]) {
+                    return a.second[col] > b.second[col];
                 }
             }
             return false;
-        });
+        }
+    );
 
     // fill worse keyframes array
     std::vector<std::vector<int>> worse_keyframes(n_vars, std::vector<int>(n_vars));
     for (int i = 0; i < n_vars; ++i) {
         for (int j = i + 1; j < n_vars; ++j) {
-            const std::vector<double>& frame1 = filtered[i];
-            const std::vector<double>& frame2 = filtered[j];
+            const std::vector<double>& frame1 = A_indexed[i].second;
+            const std::vector<double>& frame2 = A_indexed[j].second;
             bool is_worse = true;
 
             for (int k = 0; k < 3; ++k) {
@@ -198,67 +183,193 @@ void start(std::vector<std::vector<double>>& A,
         }
     }
 
-    std::vector<int> candidates(n_vars, 1);
-
+    int min_objective = INT_MAX;
+    double solution_sum = 0;
     std::array<double, 3> scores {};
     std::vector<int> path(n_vars);
     std::vector<int> solution(n_vars);
-    int min_objective = INT_MAX;
-    double solution_sum = 0;
-
+    std::vector<int> candidates(n_vars, 1);
 
     auto start = std::chrono::steady_clock::now();
     
     // Assume all zeros is not a solution
-    nx(filtered, n_vars, threshold, 0, 0, 0, path, scores, remaining_scores, min_objective,
-       solution_sum, solution, candidates, worse_keyframes);
+    solve(A_indexed, n_vars, threshold, 0, 0, 0, path, scores, remaining_scores,
+       min_objective, solution_sum, solution, candidates, worse_keyframes);
     
     auto end = std::chrono::steady_clock::now();
     auto diff = end - start;
+
     std::cout << "time: " << std::chrono::duration<double, std::milli>(diff).count() << std::endl;
-
-    
-    // min_objective = INT_MAX;
-    // auto start2 = std::chrono::steady_clock::now();
-    
-    // // Assume all zeros is not a solution
-    // nx_2(solution, path, min_objective,
-    //    remaining_scores, scores, worse_keyframes);
-    
-    // auto end2 = std::chrono::steady_clock::now();
-    // auto diff2 = end2 - start2;
-    // std::cout << "time: " << std::chrono::duration<double, std::milli>(diff2).count() << std::endl;
-
     std::cout << "min_objective = " << min_objective << std::endl;
     std::cout << "solution sum = " << solution_sum << std::endl;
 
     for (int i = 0; i < solution.size(); ++i)
         if (solution[i] == 1)
-            selected_indices.push_back(map_filtered_index[i]);
+            selected_indices.push_back(A_indexed[i].first);
 }
 
 
 int main() {
-    const int n_vars = 6;
+    // const int n_vars = 50;
     std::vector<std::vector<double>> A = {{
-        {.3, 0., .3},
-        {.2, 0., .3},
-        {.3, .1, .2},
-        {.1, .3, .15},
-        {.2, .4, .1},
-        {.01, .01, 0},
-        {0., .5, 0.},
+        {0.18,0.24,0.55},
+        {0.2,0.25,0.54},
+        {0.18,0.25,0.49},
+        {0.16,0.22,0.42},
+        {0.14,0.19,0.31},
+        {0.13,0.15,0.21},
+        {0.1,0.14,0.13},
+        {0.1,0.13,0.07},
+        {0.09,0.12,0.04},
+        {0.08,0.11,0.02},
+        {0.08,0.1,0.02},
+        {0.07,0.07,0.01},
+        {0.05,0.06,0.01},
+        {0.03,0.03,0.01},
+        {0.01,0.01,0.01},
+        {0,0,0},
+        {0.01,0.01,0},
+        {0,0,0},
+        {0.01,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0,0,0},
+        {0.01,0.01,0},
+        {0.01,0.01,0},
+        {0,0,0},
+        {0.01,0.01,0},
+        {0.01,0.01,0},
+        {0.01,0.01,0},
+        {0.01,0.01,0},
+        {0.02,0.03,0.01},
+        {0.03,0.03,0.01},
+        {0.02,0.03,0},
+        {0.02,0.03,0},
+        {0.02,0.02,0},
+        {0.04,0.05,0.01},
+        {0.03,0.05,0.01},
+        {0.02,0.03,0.01},
+        {0.03,0.03,0.01},
+        {0.03,0.04,0.01},
+        {0.05,0.08,0.02},
+        {0.09,0.12,0.06},
+        {0.09,0.13,0.07},
+        {0.1,0.14,0.09},
+        {0.11,0.15,0.12},
+        {0.12,0.16,0.14},
+        {0.12,0.16,0.17},
+        {0.12,0.16,0.19},
+        {0.12,0.17,0.23},
+        {0.13,0.17,0.3},
+        {0.13,0.17,0.34},
+        {0.14,0.17,0.35},
+        {0.14,0.19,0.35},
+        {0.16,0.21,0.39},
+        {0.17,0.21,0.41},
+        {0.16,0.21,0.47},
+        {0.16,0.21,0.48},
+        {0.18,0.23,0.46},
+        {0.19,0.25,0.51},
+        {0.18,0.24,0.49},
+        {0.17,0.21,0.49},
     }};
-    const double threshold = 0.5;
+    const double threshold = 1.5;
     const double min_score_sum = 0.025;
     std::vector<int> selected_indices;
 
-    // Initialize random number generator
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_real_distribution<double> dis(0.0, 0.5);
+    // // Initialize random number generator
+    // std::random_device rd;
+    // std::mt19937 gen(rd());
+    // std::uniform_real_distribution<double> dis(0.0, 0.5);
 
-    // Generate random values and populate the matrix
+    // // Generate random values and populate the matrix
     // for (int i = 0; i < n_vars; ++i) {
     //     std::vector<double> row;
     //     for (int j = 0; j < 3; ++j) {
@@ -270,9 +381,8 @@ int main() {
     start(A, threshold, min_score_sum, selected_indices);
 
     std::cout << "solution = ";
-    for (int i = 0; i < selected_indices.size(); ++i) {
+    for (int i = 0; i < selected_indices.size(); ++i)
         std::cout << selected_indices[i] << " ";
-    }
     std::cout << std::endl;
 
     return 0;
