@@ -18,101 +18,91 @@ glover's improvements: https://homes.di.unimi.it/righini/Didattica/ComplementiRi
 
 void solve(const std::vector<std::pair<int, std::vector<double>>>& A,
         const int n_vars, const double threshold,
-        int x, int changed, int objective, std::vector<int>& path,
+        int x, int objective, std::vector<int>& path,
         std::array<double, 3>& scores, std::array<double, 3>& remaining_scores, 
         int& min_objective, double& solution_sum, std::vector<int>& solution,
         std::vector<int>& excluded, 
         const std::vector<std::vector<int>>& worse_keyframes) {
 
-    if (changed) {
-        // Balas step 4
-        if (objective > min_objective) {
-            return;
-        }
-
-        else if (objective == min_objective) {
-            if (scores[0] > threshold && scores[1] > threshold && scores[2] > threshold
-                    && scores[0] + scores[1] + scores[2] > solution_sum) {
-                solution_sum = scores[0] + scores[1] + scores[2];
-                min_objective = objective;
-                solution = path;
-            }
-            return;
-        }
-
-        int violated = 0;
-        for (int i = 0; i < 3; ++i) {
-            const double amount_off = threshold - scores[i];
-
-            // Balas step 3
-            if (amount_off > remaining_scores[i]) {
-                return;
-            }
-
-            // Check constraints
-            else if (amount_off > 0.0) {
-                violated = 1;
-
-                // Glover's 2nd modification
-                int possible = 0;
-                const double goal_ratio = amount_off / (min_objective - objective);
-                for (int j = x; j < n_vars; ++j) {
-                    if (excluded[j] == 0 && A[j].second[i] >= goal_ratio) {
-                        possible = 1;
-                        break;
-                    }
-                }
-
-                if (!possible) {
-                    return;
-                }
-            }
-        }
-
-        // If the current solution is feasible, update the best result
-        if (violated == 0) {
-            if (objective < min_objective) {
-                min_objective = objective;
-                solution_sum = scores[0] + scores[1] + scores[2];
-                solution = path;
-            }
-            return;
-        }
-    }
-
-    // Out of bounds
+    // out of bounds
     if (x >= n_vars) {
         return;
     }
 
-    // One branch
+    // cuts
+    for (int i = 0; i < 3; ++i) {
+        const double amount_needed = threshold - scores[i];
+
+        // Balas step 3
+        if (amount_needed > remaining_scores[i]) {
+            return;
+        }
+
+        // Glover's 2nd modification
+        else if (amount_needed > 0.0) {
+            int possible = 0;
+            const int objective_diff = min_objective - objective;
+            for (int j = x; j < n_vars; ++j) {
+                if (A[j].second[i] * objective_diff >= amount_needed && excluded[j] == 0) {
+                    possible = 1;
+                    break;
+                }
+            }
+
+            if (!possible) {
+                return;
+            }
+        }
+    }
+
+    // "1" branch
     if (excluded[x] == 0) {
+
+        // update values
+        objective += 1;
         path[x] = 1;
         for (int i = 0; i < 3; ++i) {
             scores[i] += A[x].second[i];
             remaining_scores[i] -= A[x].second[i];
         }
 
-        solve(A, n_vars, threshold, x+1, 1, objective+1, path, scores, remaining_scores,
-              min_objective, solution_sum, solution, excluded, worse_keyframes);
+        // can't improve
+        if (objective > min_objective) {
+            return;
+        }
+        
+        // check feasibility and update the best result
+        else if (scores[0] > threshold && scores[1] > threshold && scores[2] > threshold) {
+            if (objective < min_objective || (objective == min_objective &&
+                                              scores[0] + scores[1] + scores[2] > solution_sum)) {
+                min_objective = objective;
+                solution_sum = scores[0] + scores[1] + scores[2];
+                solution = path;
+            }
+        }
+
+        // otherwise explore the branch further
+        else {
+            solve(A, n_vars, threshold, x+1, objective, path, scores, remaining_scores,
+                  min_objective, solution_sum, solution, excluded, worse_keyframes);
+        }
 
         // revert changes
+        objective -= 1;
         path[x] = 0;
         for (int i = 0; i < 3; ++i) {
             scores[i] -= A[x].second[i];
-            remaining_scores[i] += A[x].second[i];
         }
     }
 
-    // Zero branch
+    // "0" branch
 
-    // Custom modification
-    // If a variable is worse than the one we're skipping here
+    // Custom modification: if a variable is worse than the one we're skipping,
     // then there is no point in exploring it
     std::vector<int> removed;
-
     for (int i = x + 1; i < n_vars; ++i) {
         if (worse_keyframes[x][i] == 1 && excluded[i] == 0) {
+
             excluded[i] = 1;
             for (int j = 0; j < 3; ++j) {
                 remaining_scores[j] -= A[i].second[j];
@@ -122,8 +112,7 @@ void solve(const std::vector<std::pair<int, std::vector<double>>>& A,
         }
     }
 
-    // Don't need to check anything if path is unchanged
-    solve(A, n_vars, threshold, x+1, 0, objective, path, scores, remaining_scores,
+    solve(A, n_vars, threshold, x+1, objective, path, scores, remaining_scores,
           min_objective, solution_sum, solution, excluded, worse_keyframes);
 
     // revert changes
@@ -131,8 +120,14 @@ void solve(const std::vector<std::pair<int, std::vector<double>>>& A,
         int index = removed[i];
         
         excluded[index] = 0;
-        for(int j = 0; j < 3; ++j) {
+        for (int j = 0; j < 3; ++j) {
             remaining_scores[j] += A[index].second[j];
+        }
+    }
+
+    if (excluded[x] == 0) {
+        for (int i = 0; i < 3; ++i) {
+            remaining_scores[i] += A[x].second[i];
         }
     }
 }
@@ -188,9 +183,9 @@ void start(const std::vector<std::vector<double>>& A,
     );
 
     // fill worse keyframes array
-    // Note: could make multiple of these for each constraint, but probably not
-    // needed for our case since more recent keyframes will have higher values
-    // in all 3 dimensions
+    // Note: could make multiple of these for each combination of unsatisftied
+    // constraints, but it's probably not needed for our case since keyframes with
+    // a higher value in one dimension will likely have higher values in all dimensions
     std::vector<std::vector<int>> worse_keyframes(n_vars, std::vector<int>(n_vars));
     for (int i = 0; i < n_vars; ++i) {
         for (int j = i + 1; j < n_vars; ++j) {
@@ -220,7 +215,7 @@ void start(const std::vector<std::vector<double>>& A,
     auto start = std::chrono::steady_clock::now();
     
     // Assumes all zeros is not a solution
-    solve(A_indexed, n_vars, threshold, 0, 0, 0, path, scores, remaining_scores,
+    solve(A_indexed, n_vars, threshold, 0, 0, path, scores, remaining_scores,
           min_objective, solution_sum, solution, excluded, worse_keyframes);
     
     auto end = std::chrono::steady_clock::now();
@@ -230,7 +225,25 @@ void start(const std::vector<std::vector<double>>& A,
     std::cout << "min_objective = " << min_objective << std::endl;
     std::cout << "solution sum = " << solution_sum << std::endl;
 
-    selected_indices = {};
+    // min_objective = INT_MAX;
+    // scores = {0.0, 0.0, 0.0};
+    // std::fill(path.begin(), path.end(), 0);
+    // std::fill(excluded.begin(), excluded.end(), 0);
+
+    // auto start2 = std::chrono::steady_clock::now();
+    
+    // // Assumes all zeros is not a solution
+    // solve2(A_indexed, n_vars, threshold, 0, 0, path, scores, remaining_scores,
+    //       min_objective, solution_sum, solution, excluded, worse_keyframes);
+    
+    // auto end2 = std::chrono::steady_clock::now();
+    // auto diff2 = end2 - start2;
+
+    // std::cout << "time: " << std::chrono::duration<double, std::milli>(diff2).count() << std::endl;
+    // std::cout << "min_objective = " << min_objective << std::endl;
+    // std::cout << "solution sum = " << solution_sum << std::endl;
+
+    selected_indices.clear();
     for (std::vector<int>::size_type i = 0; i < solution.size(); ++i)
         if (solution[i] == 1)
             selected_indices.push_back(A_indexed[i].first);
@@ -395,6 +408,7 @@ int main() {
     //     {0.18,0.24,0.49},
     //     {0.17,0.21,0.49},
     // }};
+
     const double threshold = 6.5;
     const double min_score_sum = 0.025;
     std::vector<int> selected_indices;
