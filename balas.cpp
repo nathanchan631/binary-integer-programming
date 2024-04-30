@@ -1,8 +1,27 @@
 /*
 implementing balas's algorithm: https://ieeexplore.ieee.org/document/9803720
-collection of improvements (used for glover's): https://www.jstor.org/stable/2628090?seq=8
+collection of improvements from Peterson: https://www.jstor.org/stable/2628090?seq=8
 balas's paper: https://www.jstor.org/stable/167850?seq=12
-glover's improvements: https://homes.di.unimi.it/righini/Didattica/ComplementiRicercaOperativa/MaterialeCRO/Glover%20Zionts%201965%20-%20Note%20on%20Balas%20algorithm.pdf
+glover + zionts improvements: https://homes.di.unimi.it/righini/Didattica/ComplementiRicercaOperativa/MaterialeCRO/Glover%20Zionts%201965%20-%20Note%20on%20Balas%20algorithm.pdf
+
+Also tried (but slower):
+- Surrogate constraint (Glover)
+- Testing if an entry is greater than (leeway=remaining-amount_needed) (Fleischmann 2nd Modification)
+- Gomory Cut + reduction (Lemke-Spielberg) (this one doesn't fit well within our framework)
+- Peterson's Modification R-1
+- testing if max (k=min_objective-objective) elements add up to amount_needed
+
+Many tests do not apply since all entries of A are nonnegative, ie
+- Fleischmann's 1st modification
+- Brauer's modification
+- Tests GZ and P1 from Hrouda
+- and parts of other tests, such as Balas's P-Test No. 3 and Peterson's Modification R-1
+
+Also looked at Balas's constraint on the objective function from the filter problem,
+but unlikely to help since the algorithm converges quickly, and spends most of its time
+exploring dead ends.
+
+Tested with 50 random keyframes, expecting to choose 20 keyframes.
 */
 
 #include <iostream>
@@ -68,6 +87,13 @@ void solve(const std::vector<std::pair<int, std::vector<double>>>& A,
 
         // can't improve
         if (objective > min_objective) {
+            objective -= 1;
+            path[x] = 0;
+            for (int i = 0; i < 3; ++i) {
+                scores[i] -= A[x].second[i];
+                remaining_scores[i] += A[x].second[i];
+            }
+            
             return;
         }
         
@@ -168,7 +194,7 @@ void start(const std::vector<std::vector<double>>& A,
         return remaining_scores[a] < remaining_scores[b];
     });
 
-    // sort A based on which constraints are lowest
+    // sort A based on which constraints are lowest (Peterson's modification R-2)
     std::sort(A_indexed.begin(), A_indexed.end(),
         [&](const std::pair<int, std::vector<double>>& a,
             const std::pair<int, std::vector<double>>& b) {
