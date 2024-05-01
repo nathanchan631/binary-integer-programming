@@ -74,8 +74,10 @@ void solve(const std::vector<std::pair<int, std::vector<double>>>& A,
         }
     }
 
-    // "1" branch
+    // branching
     if (excluded[x] == 0) {
+
+        // "1" branch
 
         // update values
         objective += 1;
@@ -84,21 +86,9 @@ void solve(const std::vector<std::pair<int, std::vector<double>>>& A,
             scores[i] += A[x].second[i];
             remaining_scores[i] -= A[x].second[i];
         }
-
-        // can't improve
-        if (objective > min_objective) {
-            objective -= 1;
-            path[x] = 0;
-            for (int i = 0; i < 3; ++i) {
-                scores[i] -= A[x].second[i];
-                remaining_scores[i] += A[x].second[i];
-            }
-            
-            return;
-        }
         
         // check feasibility and update the best result
-        else if (scores[0] > threshold && scores[1] > threshold && scores[2] > threshold) {
+        if (scores[0] > threshold && scores[1] > threshold && scores[2] > threshold) {
             if (objective < min_objective || (objective == min_objective &&
                                               scores[0] + scores[1] + scores[2] > solution_sum)) {
                 min_objective = objective;
@@ -107,8 +97,9 @@ void solve(const std::vector<std::pair<int, std::vector<double>>>& A,
             }
         }
 
-        // otherwise explore the branch further
-        else {
+        // if not a solution, but an improved solution is possible,
+        // then explore the branch further
+        else if (objective < min_objective) {
             solve(A, n_vars, threshold, x+1, objective, path, scores, remaining_scores,
                   min_objective, solution_sum, solution, excluded, worse_keyframes);
         }
@@ -119,42 +110,52 @@ void solve(const std::vector<std::pair<int, std::vector<double>>>& A,
         for (int i = 0; i < 3; ++i) {
             scores[i] -= A[x].second[i];
         }
-    }
 
-    // "0" branch
 
-    // Custom modification: if a variable is worse than the one we're skipping,
-    // then there is no point in exploring it
-    std::vector<int> removed;
-    for (int i = x + 1; i < n_vars; ++i) {
-        if (worse_keyframes[x][i] == 1 && excluded[i] == 0) {
+        // "0" branch
 
-            excluded[i] = 1;
-            for (int j = 0; j < 3; ++j) {
-                remaining_scores[j] -= A[i].second[j];
-            }
-            
-            removed.push_back(i);
-        }
-    }
+        // Custom modification: if a variable is worse than the one we're skipping,
+        // then there is no point in exploring it
 
-    solve(A, n_vars, threshold, x+1, objective, path, scores, remaining_scores,
-          min_objective, solution_sum, solution, excluded, worse_keyframes);
-
-    // revert changes
-    for (std::vector<int>::size_type i = 0; i < removed.size(); ++i) {
-        int index = removed[i];
+        // Note: we only do this when the current keyframe has not already been excluded,
+        // because if the current keyframe is excluded, then all keyframes worse than it
+        // would have already been excluded too by the same keyframe that excluded it
         
-        excluded[index] = 0;
-        for (int j = 0; j < 3; ++j) {
-            remaining_scores[j] += A[index].second[j];
-        }
-    }
+        std::vector<int> removed;
+        for (int i = x + 1; i < n_vars; ++i) {
+            if (worse_keyframes[x][i] == 1 && excluded[i] == 0) {
 
-    if (excluded[x] == 0) {
+                excluded[i] = 1;
+                for (int j = 0; j < 3; ++j) {
+                    remaining_scores[j] -= A[i].second[j];
+                }
+                
+                removed.push_back(i);
+            }
+        }
+
+        solve(A, n_vars, threshold, x+1, objective, path, scores, remaining_scores,
+            min_objective, solution_sum, solution, excluded, worse_keyframes);
+
+        // revert changes
+        for (std::vector<int>::size_type i = 0; i < removed.size(); ++i) {
+            int index = removed[i];
+            
+            excluded[index] = 0;
+            for (int j = 0; j < 3; ++j) {
+                remaining_scores[j] += A[index].second[j];
+            }
+        }
+
         for (int i = 0; i < 3; ++i) {
             remaining_scores[i] += A[x].second[i];
         }
+    }
+
+    else {
+        // "0" branch
+        solve(A, n_vars, threshold, x+1, objective, path, scores, remaining_scores,
+               min_objective, solution_sum, solution, excluded, worse_keyframes);
     }
 }
 
